@@ -1,0 +1,422 @@
+﻿crypto_mining_ai
+│
+├── main.py
+├── config.py
+├── coingecko_data.py
+├── coinwarz_data.py
+├── coinapi_data.py
+├── miningpoolstats_data.py
+├── clore_rental_data.py
+├── sentiment_analysis.py
+├── combine_data.py
+├── preprocess_data.py
+├── train_model.py
+├── predict_real_time.py
+├── clean_old_data.py
+└── cronjob.sh
+
+
+### main.py
+```python
+# main.py
+import coingecko_data
+import coinwarz_data
+import coinapi_data
+import miningpoolstats_data
+import clore_rental_data
+import sentiment_analysis
+import combine_data
+import preprocess_data
+import train_model
+import predict_real_time
+import clean_old_data
+
+if __name__ == "__main__":
+    try:
+        coingecko_data.fetch_coingecko_data()
+        coinwarz_data.fetch_coinwarz_data()
+        coinapi_data.fetch_coinapi_data()
+        miningpoolstats_data.fetch_miningpoolstats_data()
+        clore_rental_data.fetch_clore_rental_data()
+        sentiment_analysis.main()
+        combine_data.combine_data()
+        preprocess_data.preprocess_data()
+        clean_old_data.clean_old_data()
+        train_model.train_model()
+        predict_real_time.predict_real_time()
+    except Exception as e:
+        print(f"Σφάλμα κατά την εκτέλεση του main.py: {e}")
+
+
+1. Config File (config.py)
+# config.py
+
+# API Keys
+COINWARZ_API_KEY = 'YOUR_COINWARZ_API_KEY'
+COINAPI_API_KEY = 'YOUR_COINAPI_API_KEY'
+DISCORD_BOT_TOKEN = 'YOUR_DISCORD_BOT_TOKEN'
+
+# Paths
+DATA_DIR = './data'
+HISTORY_MONTHS = 6
+
+2. Λειτουργία Αποθήκευσης με Ιστορικότητα 6 Μηνών
+Προσθέτω τη συνάρτηση save_with_history() σε όλα τα scripts συλλογής δεδομένων.
+import pandas as pd
+import os
+from datetime import datetime, timedelta
+from config import DATA_DIR, HISTORY_MONTHS
+
+def save_with_history(df, filename):
+    """Προσθέτει τα νέα δεδομένα και κρατάει ιστορικό μόνο για τους τελευταίους 6 μήνες."""
+    filepath = os.path.join(DATA_DIR, filename)
+
+    # Προσθήκη timestamp
+    df['timestamp'] = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+
+    # Αν υπάρχει ήδη το αρχείο, προσθέτουμε τα νέα δεδομένα στο τέλος
+    try:
+        old_df = pd.read_csv(filepath)
+        combined_df = pd.concat([old_df, df], ignore_index=True)
+    except FileNotFoundError:
+        combined_df = df
+
+    # Διαγραφή δεδομένων παλαιότερων των 6 μηνών
+    six_months_ago = datetime.now() - timedelta(days=30 * HISTORY_MONTHS)
+    combined_df['timestamp'] = pd.to_datetime(combined_df['timestamp'])
+    combined_df = combined_df[combined_df['timestamp'] >= six_months_ago]
+
+    # Αποθήκευση του αρχείου
+    combined_df.to_csv(filepath, index=False)
+    print(f"Τα δεδομένα αποθηκεύτηκαν στο: {filepath}")
+
+
+3. Συλλογή Δεδομένων (Data Collection)
+3.1 CoinGecko Data (coingecko_data.py)
+import requests
+import pandas as pd
+from utils import save_with_history
+
+def fetch_coingecko_data():
+    url = 'https://api.coingecko.com/api/v3/coins/markets'
+    params = {'vs_currency': 'usd', 'order': 'market_cap_desc', 'per_page': 100, 'page': 1, 'sparkline': 'false'}
+    response = requests.get(url)
+    data = response.json()
+
+    df = pd.DataFrame(data, columns=['id', 'symbol', 'name', 'current_price', 'market_cap', 'total_volume'])
+    save_with_history(df, 'coingecko_prices.csv')
+
+if __name__ == "__main__":
+    fetch_coingecko_data()
+
+3.2 CoinWarz Data (coinwarz_data.py)
+
+import requests
+import pandas as pd
+from config import COINWARZ_API_KEY
+from utils import save_with_history
+
+def fetch_coinwarz_data():
+    url = f'https://www.coinwarz.com/v1/api/coininformation/?apikey={COINWARZ_API_KEY}'
+    response = requests.get(url)
+    data = response.json()
+
+    gpu_mineable = [coin for coin in data['Data'] if 'GPU' in coin['Algorithm']]
+    df = pd.DataFrame(gpu_mineable, columns=['CoinName', 'Algorithm', 'Difficulty', 'NetHash', 'BlockReward', 'ExchangeRate'])
+    save_with_history(df, 'coinwarz_mining_data.csv')
+
+if __name__ == "__main__":
+    fetch_coinwarz_data()
+
+
+3.3 CoinAPI Data (coinapi_data.py)
+
+import requests
+import pandas as pd
+from config import COINAPI_API_KEY
+from utils import save_with_history
+
+def fetch_coinapi_data():
+    url = 'https://rest.coinapi.io/v1/assets'
+    headers = {'X-CoinAPI-Key': COINAPI_API_KEY}
+    response = requests.get(url, headers=headers)
+    data = response.json()
+
+    unlisted_coins = [asset for asset in data if not asset['data_end']]
+    df = pd.DataFrame(unlisted_coins, columns=['asset_id', 'name', 'type_is_crypto'])
+    save_with_history(df, 'coinapi_new_coins.csv')
+
+if __name__ == "__main__":
+    fetch_coinapi_data()
+
+3.4 Mining Pool Stats (miningpoolstats_data.py)
+
+import requests
+import pandas as pd
+from bs4 import BeautifulSoup
+from utils import save_with_history
+
+def fetch_miningpoolstats_data():
+    url = 'https://miningpoolstats.stream/'
+    response = requests.get(url)
+    soup = BeautifulSoup(response.text, 'html.parser')
+
+    coins = []
+    for row in soup.find_all('tr'):
+        columns = row.find_all('td')
+        if columns and 'GPU' in columns[2].text:
+            coin = {'CoinName': columns[0].text.strip(), 'Algorithm': columns[2].text.strip(),
+                    'Difficulty': columns[4].text.strip(), 'NetHash': columns[5].text.strip()}
+            coins.append(coin)
+
+    df = pd.DataFrame(coins)
+    save_with_history(df, 'miningpoolstats_data.csv')
+
+if __name__ == "__main__":
+    fetch_miningpoolstats_data()
+
+
+3.5 Clore.ai Rental Data (clore_rental_data.py)
+
+import requests
+import pandas as pd
+from utils import save_with_history
+
+def fetch_clore_rental_data():
+    url = 'https://api.clore.ai/rental-prices'
+    response = requests.get(url)
+    data = response.json()
+
+    df = pd.DataFrame(data, columns=['Algorithm', 'PricePerMH', 'Availability'])
+    save_with_history(df, 'clore_rental_data.csv')
+
+if __name__ == "__main__":
+    fetch_clore_rental_data()
+
+
+3.6 Sentiment Analysis (sentiment_analysis.py)
+
+import requests
+import pandas as pd
+from bs4 import BeautifulSoup
+from discord import Client
+import asyncio
+from config import DISCORD_BOT_TOKEN
+from utils import save_with_history
+
+def fetch_bitcointalk_data():
+    url = 'https://bitcointalk.org/index.php?board=159.0'
+    response = requests.get(url)
+    soup = BeautifulSoup(response.text, 'html.parser')
+
+    posts = []
+    for post in soup.find_all('div', class_='subject'):
+        post_title = post.get_text(strip=True)
+        posts.append({'PostTitle': post_title, 'Sentiment': 'Neutral'})
+
+    df = pd.DataFrame(posts)
+    save_with_history(df, 'bitcointalk_sentiment.csv')
+
+
+async def fetch_discord_data():
+    client = Client(intents=discord.Intents.default())
+
+    @client.event
+    async def on_ready():
+        messages = []
+        for guild in client.guilds:
+            for channel in guild.text_channels:
+                async for message in channel.history(limit=100):
+                    messages.append({'Channel': channel.name, 'Message': message.content, 'Sentiment': 'Neutral'})
+
+        df = pd.DataFrame(messages)
+        save_with_history(df, 'discord_sentiment.csv')
+        await client.close()
+
+    await client.start(DISCORD_BOT_TOKEN)
+
+
+def main():
+    fetch_bitcointalk_data()
+    asyncio.run(fetch_discord_data())
+
+
+if __name__ == "__main__":
+    main()
+
+
+4. Συνδυασμός Δεδομένων (Combine Data)
+
+import pandas as pd
+import os
+from config import DATA_DIR
+
+def combine_data():
+    files = ['coingecko_prices.csv', 'coinwarz_mining_data.csv', 'coinapi_new_coins.csv',
+             'miningpoolstats_data.csv', 'clore_rental_data.csv', 'bitcointalk_sentiment.csv', 'discord_sentiment.csv']
+
+    dfs = [pd.read_csv(os.path.join(DATA_DIR, file)) for file in files]
+    combined_df = pd.concat(dfs, axis=1)
+
+    combined_df.to_csv(os.path.join(DATA_DIR, 'combined_dataset.csv'), index=False)
+    print("Combined dataset saved.")
+
+if __name__ == "__main__":
+    combine_data()
+
+4. Συνδυασμός Δεδομένων (Combine Data)
+
+# preprocess_data.py
+
+import pandas as pd
+from sklearn.preprocessing import MinMaxScaler, OneHotEncoder
+import os
+from config import DATA_DIR
+
+def preprocess_data():
+    """Προεπεξεργασία του combined_dataset.csv και αποθήκευση του αποτελέσματος σε final_dataset.csv"""
+    input_path = os.path.join(DATA_DIR, 'combined_dataset.csv')
+    output_path = os.path.join(DATA_DIR, 'final_dataset.csv')
+
+    # Φόρτωση του συνδυασμένου dataset
+    df = pd.read_csv(input_path)
+
+    # Καθαρισμός δεδομένων
+    df = df.dropna()  # Αφαίρεση γραμμών με κενές τιμές
+    df = df.drop_duplicates()  # Αφαίρεση διπλότυπων
+
+    # Κανονικοποίηση αριθμητικών δεδομένων
+    numeric_columns = df.select_dtypes(include=['float64', 'int64']).columns
+    scaler = MinMaxScaler()
+    df[numeric_columns] = scaler.fit_transform(df[numeric_columns])
+
+    # One-Hot Encoding κατηγορικών δεδομένων
+    categorical_columns = df.select_dtypes(include=['object']).columns
+    if len(categorical_columns) > 0:
+        encoder = OneHotEncoder(sparse=False, drop='first')
+        encoded_data = encoder.fit_transform(df[categorical_columns])
+        encoded_df = pd.DataFrame(encoded_data, columns=encoder.get_feature_names_out(categorical_columns))
+        df = pd.concat([df.drop(columns=categorical_columns), encoded_df], axis=1)
+
+    # Αποθήκευση του τελικού dataset
+    df.to_csv(output_path, index=False)
+    print(f"Τα δεδομένα προεπεξεργάστηκαν και αποθηκεύτηκαν στο: {output_path}")
+
+if __name__ == "__main__":
+    preprocess_data()
+
+5. Καθαρισμός Παλαιών Δεδομένων (Clean Old Data)
+
+import os
+import pandas as pd
+from datetime import datetime, timedelta
+from config import DATA_DIR, HISTORY_MONTHS
+
+def clean_old_data():
+    """Καθαρίζει δεδομένα που είναι παλαιότερα από 6 μήνες."""
+    six_months_ago = datetime.now() - timedelta(days=30 * HISTORY_MONTHS)
+
+    for filename in os.listdir(DATA_DIR):
+        filepath = os.path.join(DATA_DIR, filename)
+        df = pd.read_csv(filepath)
+        df['timestamp'] = pd.to_datetime(df['timestamp'], errors='coerce')
+        df = df[df['timestamp'] >= six_months_ago]
+        df.to_csv(filepath, index=False)
+        print(f"Καθαρίστηκαν παλιά δεδομένα από το: {filename}")
+
+if __name__ == "__main__":
+    clean_old_data()
+
+6. Εκπαίδευση του AI Μοντέλου (Model Training)
+
+import pandas as pd
+from sklearn.model_selection import train_test_split
+from sklearn.ensemble import RandomForestRegressor
+from sklearn.metrics import mean_absolute_error
+import joblib
+import os
+from config import DATA_DIR
+
+def train_model():
+    df = pd.read_csv(os.path.join(DATA_DIR, 'combined_dataset.csv'))
+    X = df.drop(columns=['Profitability'])
+    y = df['Profitability']
+
+    X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42)
+
+    model = RandomForestRegressor(n_estimators=100, random_state=42)
+    model.fit(X_train, y_train)
+
+    predictions = model.predict(X_test)
+    mae = mean_absolute_error(y_test, predictions)
+    print(f"Mean Absolute Error: {mae}")
+
+    joblib.dump(model, os.path.join(DATA_DIR, 'crypto_mining_model.pkl'))
+
+if __name__ == "__main__":
+    train_model()
+
+
+7. Real-Time Prediction (predict_real_time.py)
+
+import pandas as pd
+import joblib
+import os
+from config import DATA_DIR
+
+def predict_real_time():
+    model = joblib.load(os.path.join(DATA_DIR, 'crypto_mining_model.pkl'))
+    df = pd.read_csv(os.path.join(DATA_DIR, 'combined_dataset.csv'))
+    X = df.drop(columns=['Profitability'])
+
+    predictions = model.predict(X)
+    df['Predicted_Profitability'] = predictions
+    df.to_csv(os.path.join(DATA_DIR, 'real_time_predictions.csv'), index=False)
+    print("Real-time predictions saved.")
+
+if __name__ == "__main__":
+    predict_real_time()
+
+
+8. Automation Script (cronjob.sh)
+
+### cronjob.sh
+```bash
+#!/bin/bash
+# cronjob.sh
+
+START=$(date +%s)
+LOG_FILE="cronjob.log"
+EMAIL="youremail@example.com"
+
+{
+    echo "--- Εκκίνηση εκτέλεσης: $(date) ---"
+    python3 coingecko_data.py
+    python3 coinwarz_data.py
+    python3 coinapi_data.py
+    python3 miningpoolstats_data.py
+    python3 clore_rental_data.py
+    python3 sentiment_analysis.py
+    python3 combine_data.py
+    python3 preprocess_data.py
+    python3 clean_old_data.py
+    python3 train_model.py
+    python3 predict_real_time.py
+    echo "--- Ολοκλήρωση εκτέλεσης: $(date) ---"
+} >> $LOG_FILE 2>&1
+
+END=$(date +%s)
+DIFF=$((END - START))
+echo "Χρόνος εκτέλεσης: $DIFF δευτερόλεπτα" >> $LOG_FILE
+
+if grep -q "Σφάλμα" $LOG_FILE; then
+    echo "Σφάλμα εντοπίστηκε!" | mail -s "Σφάλμα στο cronjob" $EMAIL
+fi
+
+9. Χρονοπρογραμματισμός με Cron Job
+
+crontab -e
+
+Πρόσθεσε την παρακάτω γραμμή:
+
+0 3 * * * /usr/bin/bash /path/to/cronjob.sh
